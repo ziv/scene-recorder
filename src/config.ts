@@ -1,27 +1,8 @@
 export type Weather = 'clear' | 'partlyCloudy' | 'overcast' | 'foggy';
 
-export interface Waypoint {
-  lat: number; // degrees
-  lon: number; // degrees
-  /** Meters above ground (terrain height is sampled at this lat/lon and added). */
-  height: number;
-}
-
-export interface FlightSpec {
-  /** Camera position on the first frame. */
-  start: Waypoint;
-  /** Camera position on the last frame; the camera always looks at this point. */
-  end: Waypoint;
-  /** Flight speed along the path, m/s. Video duration = path length / speed. */
-  speed: number;
-}
-
 export interface Config {
-  /**
-   * Flight shown when the app loads. Start, end and speed are edited in the UI
-   * (by clicking the map or typing coordinates) before recording.
-   */
-  defaultFlight: FlightSpec;
+  /** Scene type selected when the app loads (see src/scenes/index.ts). */
+  defaultScene: string;
   video: {
     width: number;
     height: number;
@@ -40,19 +21,14 @@ export interface Config {
   environment: {
     /** Date used for the sun's seasonal position, 'YYYY-MM-DD'. */
     date: string;
-    /** Hour of day (0-24, fractions allowed), local solar time at the end point. */
+    /** Hour of day (0-24, fractions allowed), local solar time at the scene's focus point. */
     hourOfDay: number;
     weather: Weather;
   };
 }
 
 export const config: Config = {
-  defaultFlight: {
-    // Example: approach to the Matterhorn summit from the north-west.
-    start: { lat: 46.0032, lon: 7.6327, height: 1500 },
-    end: { lat: 45.9763, lon: 7.6586, height: 200 },
-    speed: 100,
-  },
+  defaultScene: 'straight',
   video: {
     width: 1200,
     height: 800,

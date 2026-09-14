@@ -1,29 +1,37 @@
 import * as Cesium from 'cesium';
-import type { Waypoint } from './config';
 
-export type PointKind = 'start' | 'end';
+export interface MapMarker {
+  key: string;
+  label: string;
+  /** CSS colour. */
+  color: string;
+  lat: number;
+  lon: number;
+}
 
 export interface FlightMap {
-  /** Moves the start/end markers and the connecting arrow. */
-  setPoints(start: Waypoint, end: Waypoint): void;
-  /** Which point the next map click will place; null disables picking. */
-  setArmed(kind: PointKind | null): void;
-  /** Zooms the map to show both points. */
-  fitTo(start: Waypoint, end: Waypoint): void;
+  /** Replaces the point markers. */
+  setMarkers(markers: MapMarker[]): void;
+  /** Draws the camera's ground track (ECEF positions; heights are ignored). Empty clears it. */
+  setTrack(positions: Cesium.Cartesian3[]): void;
+  /** Which marker the next map click will place; null disables picking. */
+  setArmed(key: string | null): void;
+  /** Zooms the map to show every marker and the track. */
+  fitAll(): void;
   /** Blocks picking (e.g. while recording). */
   setEnabled(enabled: boolean): void;
   destroy(): void;
 }
 
 export interface FlightMapOptions {
-  /** Called with the picked lat/lon when the user clicks the map while a point is armed. */
-  onPick: (kind: PointKind, lat: number, lon: number) => void;
+  /** Called with the picked lat/lon when the user clicks the map while a marker is armed. */
+  onPick: (key: string, lat: number, lon: number) => void;
 }
 
 /**
  * A small 2D map (labelled aerial imagery, with a place-name search box) used
- * to pick the flight's start and end points by clicking. Independent of the
- * recording viewer, so the main viewport can keep showing the camera preview.
+ * to pick scene points by clicking. Independent of the recording viewer, so
+ * the main viewport can keep showing the camera preview.
  */
 export function createFlightMap(container: HTMLElement, options: FlightMapOptions): FlightMap {
   const viewer = new Cesium.Viewer(container, {
@@ -51,25 +59,20 @@ export function createFlightMap(container: HTMLElement, options: FlightMapOption
   const scene = viewer.scene;
   const canvas = scene.canvas;
 
-  const startEntity = viewer.entities.add({
-    position: Cesium.Cartesian3.ZERO,
-    point: { pixelSize: 12, color: Cesium.Color.LIME, outlineColor: Cesium.Color.BLACK, outlineWidth: 2 },
-    label: labelFor('Start'),
-  });
-  const endEntity = viewer.entities.add({
-    position: Cesium.Cartesian3.ZERO,
-    point: { pixelSize: 12, color: Cesium.Color.RED, outlineColor: Cesium.Color.BLACK, outlineWidth: 2 },
-    label: labelFor('End'),
-  });
-  const lineEntity = viewer.entities.add({
+  const markerEntities = new Map<string, Cesium.Entity>();
+  let markerPositions: Cesium.Cartographic[] = [];
+  let trackPositions: Cesium.Cartographic[] = [];
+
+  const trackEntity = viewer.entities.add({
+    show: false,
     polyline: {
-      positions: [Cesium.Cartesian3.ZERO, Cesium.Cartesian3.ZERO],
+      positions: [],
       width: 10,
       material: new Cesium.PolylineArrowMaterialProperty(Cesium.Color.YELLOW),
     },
   });
 
-  let armed: PointKind | null = null;
+  let armed: string | null = null;
   let enabled = true;
 
   const handler = new Cesium.ScreenSpaceEventHandler(canvas);
@@ -86,28 +89,69 @@ export function createFlightMap(container: HTMLElement, options: FlightMapOption
   };
 
   return {
-    setPoints(start, end) {
-      const s = Cesium.Cartesian3.fromDegrees(start.lon, start.lat, 0);
-      const e = Cesium.Cartesian3.fromDegrees(end.lon, end.lat, 0);
-      startEntity.position = new Cesium.ConstantPositionProperty(s);
-      endEntity.position = new Cesium.ConstantPositionProperty(e);
-      lineEntity.polyline!.positions = new Cesium.ConstantProperty([s, e]);
+    setMarkers(markers) {
+      const seen = new Set<string>();
+      for (const m of markers) {
+        seen.add(m.key);
+        const position = Cesium.Cartesian3.fromDegrees(m.lon, m.lat, 0);
+        const color = Cesium.Color.fromCssColorString(m.color);
+        let entity = markerEntities.get(m.key);
+        if (!entity) {
+          entity = viewer.entities.add({
+            position,
+            point: { pixelSize: 12, color, outlineColor: Cesium.Color.BLACK, outlineWidth: 2 },
+            label: {
+              text: m.label,
+              font: '13px system-ui, sans-serif',
+              fillColor: Cesium.Color.WHITE,
+              outlineColor: Cesium.Color.BLACK,
+              outlineWidth: 3,
+              style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+              pixelOffset: new Cesium.Cartesian2(0, -16),
+              verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+            },
+          });
+          markerEntities.set(m.key, entity);
+        } else {
+          entity.position = new Cesium.ConstantPositionProperty(position);
+          entity.point!.color = new Cesium.ConstantProperty(color);
+          entity.label!.text = new Cesium.ConstantProperty(m.label);
+        }
+      }
+      for (const [key, entity] of markerEntities) {
+        if (!seen.has(key)) {
+          viewer.entities.remove(entity);
+          markerEntities.delete(key);
+        }
+      }
+      markerPositions = markers.map((m) => Cesium.Cartographic.fromDegrees(m.lon, m.lat));
       scene.requestRender();
     },
-    setArmed(kind) {
-      armed = kind;
+    setTrack(positions) {
+      trackPositions = positions.map((p) => Cesium.Cartographic.fromCartesian(p));
+      const flat = trackPositions.map((c) => Cesium.Cartesian3.fromRadians(c.longitude, c.latitude, 0));
+      trackEntity.show = flat.length >= 2;
+      trackEntity.polyline!.positions = new Cesium.ConstantProperty(flat);
+      scene.requestRender();
+    },
+    setArmed(key) {
+      armed = key;
       updateCursor();
     },
-    fitTo(start, end) {
-      const west = Math.min(start.lon, end.lon);
-      const east = Math.max(start.lon, end.lon);
-      const south = Math.min(start.lat, end.lat);
-      const north = Math.max(start.lat, end.lat);
-      // Pad by half the span on each side, with a floor so identical points still get a sensible zoom.
-      const padLon = Math.max((east - west) * 0.5, 0.01);
-      const padLat = Math.max((north - south) * 0.5, 0.01);
+    fitAll() {
+      const all = [...markerPositions, ...trackPositions];
+      if (all.length === 0) return;
+      const rect = Cesium.Rectangle.fromCartographicArray(all);
+      // Pad by half the span on each side, with a floor so a tiny scene still gets a sensible zoom.
+      const padLon = Math.max(rect.width * 0.5, Cesium.Math.toRadians(0.01));
+      const padLat = Math.max(rect.height * 0.5, Cesium.Math.toRadians(0.01));
       scene.camera.setView({
-        destination: Cesium.Rectangle.fromDegrees(west - padLon, south - padLat, east + padLon, north + padLat),
+        destination: new Cesium.Rectangle(
+          rect.west - padLon,
+          Math.max(rect.south - padLat, -Cesium.Math.PI_OVER_TWO),
+          rect.east + padLon,
+          Math.min(rect.north + padLat, Cesium.Math.PI_OVER_TWO),
+        ),
       });
       scene.requestRender();
     },
@@ -119,18 +163,5 @@ export function createFlightMap(container: HTMLElement, options: FlightMapOption
       handler.destroy();
       viewer.destroy();
     },
-  };
-}
-
-function labelFor(text: string): Cesium.LabelGraphics.ConstructorOptions {
-  return {
-    text,
-    font: '13px system-ui, sans-serif',
-    fillColor: Cesium.Color.WHITE,
-    outlineColor: Cesium.Color.BLACK,
-    outlineWidth: 3,
-    style: Cesium.LabelStyle.FILL_AND_OUTLINE,
-    pixelOffset: new Cesium.Cartesian2(0, -16),
-    verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
   };
 }

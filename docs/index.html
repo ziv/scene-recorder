@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Scene Recorder</title>
+    <style>
+      :root {
+        --sidebar-width: 400px;
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #111;
+        color: #eee;
+        font-family: system-ui, sans-serif;
+        overflow: hidden;
+      }
+      /* Left sidebar: map + flight controls. */
+      #sidebar {
+        position: fixed;
+        top: 0;
+        left: 0;
+        bottom: 0;
+        width: var(--sidebar-width);
+        box-sizing: border-box;
+        padding: 12px;
+        background: #1a1a1a;
+        border-right: 1px solid #333;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        overflow-y: auto;
+        font-size: 13px;
+      }
+      #sidebar h1 {
+        margin: 0;
+        font-size: 16px;
+        font-weight: 600;
+      }
+      #map {
+        width: 100%;
+        height: 300px;
+        flex-shrink: 0;
+        border-radius: 6px;
+        overflow: hidden;
+        background: #000;
+      }
+      #pickHint {
+        color: #ffd54f;
+        min-height: 1.4em;
+      }
+      fieldset {
+        border: 1px solid #333;
+        border-radius: 6px;
+        padding: 8px 10px 10px;
+        margin: 0;
+      }
+      legend {
+        padding: 0 6px;
+        color: #bbb;
+      }
+      .point-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 6px;
+      }
+      .point-header .dot {
+        display: inline-block;
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        margin-right: 6px;
+        vertical-align: middle;
+      }
+      .fields {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 6px;
+      }
+      .fields label {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        color: #aaa;
+        font-size: 11px;
+      }
+      select {
+        background: #222;
+        color: #eee;
+        border: 1px solid #444;
+        border-radius: 4px;
+        padding: 4px 6px;
+        font-size: 13px;
+      }
+      #sceneDescription {
+        color: #aaa;
+        font-size: 12px;
+        line-height: 1.4;
+      }
+      #paramsForm {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .number-grid {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 6px 10px;
+      }
+      .number-grid label {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        color: #aaa;
+        font-size: 11px;
+      }
+      input[type='number'] {
+        width: 100%;
+        box-sizing: border-box;
+        background: #222;
+        color: #eee;
+        border: 1px solid #444;
+        border-radius: 4px;
+        padding: 4px 6px;
+        font-size: 13px;
+      }
+      input[type='number'].invalid {
+        border-color: #e53935;
+      }
+      input[type='range'] {
+        width: 100%;
+      }
+      button {
+        font-size: 13px;
+        padding: 5px 12px;
+        cursor: pointer;
+        background: #2b2b2b;
+        color: #eee;
+        border: 1px solid #555;
+        border-radius: 4px;
+      }
+      button:hover:not(:disabled) {
+        background: #383838;
+      }
+      button:disabled {
+        cursor: default;
+        opacity: 0.5;
+      }
+      button.armed {
+        background: #ffd54f;
+        color: #111;
+        border-color: #ffd54f;
+      }
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .row label {
+        color: #aaa;
+        white-space: nowrap;
+      }
+      #startBtn {
+        font-size: 15px;
+        padding: 8px 18px;
+        background: #4caf50;
+        border-color: #4caf50;
+        color: #fff;
+        font-weight: 600;
+      }
+      #pathSummary,
+      #status {
+        font-size: 12px;
+        line-height: 1.5;
+        white-space: pre-line;
+      }
+      #pathSummary {
+        color: #bbb;
+        font-family: ui-monospace, Menlo, monospace;
+      }
+      #frameLabel {
+        color: #aaa;
+        font-size: 11px;
+      }
+      #progressBar {
+        height: 6px;
+        background: #333;
+        border-radius: 3px;
+        overflow: hidden;
+        display: none;
+      }
+      #progressBar.active {
+        display: block;
+      }
+      #progressFill {
+        height: 100%;
+        width: 0;
+        background: #4caf50;
+        transition: width 0.2s;
+      }
+      /* The Cesium container is a fixed video-resolution surface, CSS-scaled to fit the viewport. */
+      #viewport {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: var(--sidebar-width);
+        right: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      #cesiumContainer {
+        /* Must keep its exact configured pixel size; the flex parent would
+           otherwise shrink it to the viewport width. */
+        flex-shrink: 0;
+        transform-origin: center center;
+      }
+    </style>
+    <script type="module" crossorigin src="/scene-recorder/assets/index-D0b2HNIc.js"></script>
+    <link rel="stylesheet" crossorigin href="/scene-recorder/assets/index-B9DDZdqH.css">
+  </head>
+  <body>
+    <aside id="sidebar">
+      <h1>Scene Recorder</h1>
+      <div id="map"></div>
+      <div id="pickHint"></div>
+
+      <div class="row">
+        <label for="sceneType">Scene</label>
+        <select id="sceneType" style="flex: 1"></select>
+      </div>
+      <div id="sceneDescription"></div>
+
+      <div id="paramsForm"></div>
+
+      <div class="row">
+        <button id="fitBtn" type="button">Fit map to scene</button>
+        <button id="resetBtn" type="button" style="margin-left: auto">Reset to defaults</button>
+      </div>
+
+      <div>
+        <div class="row">
+          <label for="frameSlider">Preview</label>
+          <span id="frameLabel"></span>
+        </div>
+        <input id="frameSlider" type="range" min="0" max="1" value="0" />
+      </div>
+
+      <div id="pathSummary"></div>
+      <button id="startBtn" type="button" disabled>Start Recording</button>
+      <div id="progressBar"><div id="progressFill"></div></div>
+      <div id="status">Loading…</div>
+    </aside>
+
+    <div id="viewport">
+      <div id="cesiumContainer"></div>
+    </div>
+  </body>
+</html>

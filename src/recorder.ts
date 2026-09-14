@@ -1,6 +1,6 @@
 import * as Cesium from 'cesium';
 import type { Config } from './config';
-import { setCameraToFrame, type FlightPath } from './path';
+import { setCameraToFrame, type Trajectory } from './scenes';
 import { Mp4Encoder } from './encoder';
 
 export interface RecordProgress {
@@ -18,7 +18,7 @@ export interface RecordProgress {
  */
 export async function recordFlight(
   viewer: Cesium.Viewer,
-  path: FlightPath,
+  trajectory: Trajectory,
   config: Config,
   onProgress: (p: RecordProgress) => void,
 ): Promise<Blob> {
@@ -33,22 +33,22 @@ export async function recordFlight(
   const encoder = await Mp4Encoder.create(canvas, config);
   try {
     // Warm-up: load the start view fully so frame 0 is as sharp as the rest.
-    onProgress({ frame: 0, frameCount: path.frameCount, phase: 'warm-up', etaSeconds: null });
-    setCameraToFrame(viewer.scene.camera, path, 0);
+    onProgress({ frame: 0, frameCount: trajectory.frameCount, phase: 'warm-up', etaSeconds: null });
+    setCameraToFrame(viewer.scene.camera, trajectory, 0);
     await renderUntilLoaded(viewer, config.tileLoadTimeoutMs);
 
     const startedAt = performance.now();
-    for (let frame = 0; frame < path.frameCount; frame++) {
-      setCameraToFrame(viewer.scene.camera, path, frame);
+    for (let frame = 0; frame < trajectory.frameCount; frame++) {
+      setCameraToFrame(viewer.scene.camera, trajectory, frame);
       await renderUntilLoaded(viewer, config.tileLoadTimeoutMs);
       await encoder.addFrame(frame);
 
       const elapsed = (performance.now() - startedAt) / 1000;
-      const etaSeconds = frame > 0 ? (elapsed / (frame + 1)) * (path.frameCount - frame - 1) : null;
-      onProgress({ frame: frame + 1, frameCount: path.frameCount, phase: 'recording', etaSeconds });
+      const etaSeconds = frame > 0 ? (elapsed / (frame + 1)) * (trajectory.frameCount - frame - 1) : null;
+      onProgress({ frame: frame + 1, frameCount: trajectory.frameCount, phase: 'recording', etaSeconds });
     }
 
-    onProgress({ frame: path.frameCount, frameCount: path.frameCount, phase: 'encoding', etaSeconds: null });
+    onProgress({ frame: trajectory.frameCount, frameCount: trajectory.frameCount, phase: 'encoding', etaSeconds: null });
     return await encoder.finalize();
   } catch (err) {
     await encoder.cancel().catch(() => {});

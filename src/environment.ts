@@ -1,21 +1,21 @@
 import * as Cesium from 'cesium';
 import type { Config } from './config';
-import type { FlightPath } from './path';
+import type { Trajectory } from './scenes';
 
 export interface Environment {
-  /** Re-applies time-of-day and weather for a (new) flight path. */
-  update(path: FlightPath): void;
+  /** Re-applies time-of-day and weather for a (new) trajectory. */
+  update(trajectory: Trajectory): void;
 }
 
 /**
- * Applies time-of-day and weather to the scene for the current flight path.
+ * Applies time-of-day and weather to the scene for the current trajectory.
  *
- * Time: the configured hour is local solar time at the end point — converted
- * to UTC via its longitude (15° per hour) — and the globe is sun-lit, so
+ * Time: the configured hour is local solar time at the trajectory's focus —
+ * converted to UTC via its longitude (15° per hour) — and the globe is sun-lit, so
  * lighting matches the chosen hour and season.
  *
- * Weather: fog density plus procedurally placed cumulus clouds around the end
- * point, covering the whole flight corridor. Cloud placement uses a seeded
+ * Weather: fog density plus procedurally placed cumulus clouds around the
+ * focus, covering the whole area the camera moves through. Cloud placement uses a seeded
  * RNG, so every recording of the same path renders the identical sky.
  */
 export function createEnvironment(viewer: Cesium.Viewer, config: Config): Environment {
@@ -26,10 +26,10 @@ export function createEnvironment(viewer: Cesium.Viewer, config: Config): Enviro
   let clouds: Cesium.CloudCollection | null = null;
 
   return {
-    update(path: FlightPath): void {
+    update(trajectory: Trajectory): void {
       const { date, hourOfDay, weather } = config.environment;
 
-      const utcHours = hourOfDay - path.spec.end.lon / 15;
+      const utcHours = hourOfDay - trajectory.focus.lon / 15;
       const time = Cesium.JulianDate.fromIso8601(`${date}T00:00:00Z`);
       Cesium.JulianDate.addHours(time, utcHours, time);
       viewer.clock.currentTime = time;
@@ -45,7 +45,7 @@ export function createEnvironment(viewer: Cesium.Viewer, config: Config): Enviro
           break;
         case 'partlyCloudy':
           scene.fog.enabled = false;
-          clouds = addClouds(scene, path, {
+          clouds = addClouds(scene, trajectory, {
             count: 40,
             brightness: 1.0,
             baseAltitude: 1400,
@@ -55,7 +55,7 @@ export function createEnvironment(viewer: Cesium.Viewer, config: Config): Enviro
         case 'overcast':
           scene.fog.enabled = true;
           scene.fog.density = 4e-4;
-          clouds = addClouds(scene, path, {
+          clouds = addClouds(scene, trajectory, {
             count: 170,
             brightness: 0.55,
             baseAltitude: 1000,
@@ -74,24 +74,23 @@ export function createEnvironment(viewer: Cesium.Viewer, config: Config): Enviro
 interface CloudOptions {
   count: number;
   brightness: number;
-  /** Cloud base height above the end point's ground, meters. */
+  /** Cloud base height above the focus point's ground, meters. */
   baseAltitude: number;
   altitudeSpread: number;
 }
 
-function addClouds(scene: Cesium.Scene, path: FlightPath, opts: CloudOptions): Cesium.CloudCollection {
+function addClouds(scene: Cesium.Scene, trajectory: Trajectory, opts: CloudOptions): Cesium.CloudCollection {
   const clouds = new Cesium.CloudCollection();
   const rng = mulberry32(0xc10d5eed);
-  const { lon, lat } = path.spec.end;
-  const groundHeight = path.endGroundHeight;
+  const { lon, lat, groundHeight } = trajectory.focus;
 
-  // Cover the whole flight corridor with margin.
-  const radius = Math.max(3000, path.length + 1500);
+  // Cover the whole scene with margin.
+  const radius = Math.max(3000, trajectory.radius + 1500);
   const metersPerDegLat = 111_320;
   const metersPerDegLon = metersPerDegLat * Math.cos(Cesium.Math.toRadians(lat));
 
   for (let i = 0; i < opts.count; i++) {
-    // Uniform position in a disc around the end point.
+    // Uniform position in a disc around the focus.
     const angle = rng() * Cesium.Math.TWO_PI;
     const dist = radius * Math.sqrt(rng());
     const east = Math.cos(angle) * dist;

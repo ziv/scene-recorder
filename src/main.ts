@@ -1,11 +1,21 @@
 import * as Cesium from 'cesium';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
-import { config, type FlightSpec, type Waypoint } from './config';
+import { config } from './config';
 import { createViewer } from './viewer';
-import { buildPath, setCameraToFrame, type FlightPath } from './path';
 import { createEnvironment } from './environment';
-import { createFlightMap, type PointKind } from './map';
+import { createFlightMap } from './map';
+import { renderForm, type FormHandle } from './form';
 import { recordFlight, type RecordProgress } from './recorder';
+import {
+  getSceneType,
+  sceneTypes,
+  setCameraToFrame,
+  type Params,
+  type PointField,
+  type SceneType,
+  type Trajectory,
+  type Waypoint,
+} from './scenes';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -17,26 +27,18 @@ const viewportEl = $<HTMLDivElement>('viewport');
 const container = $<HTMLDivElement>('cesiumContainer');
 const mapEl = $<HTMLDivElement>('map');
 const pickHint = $<HTMLDivElement>('pickHint');
+const sceneSelect = $<HTMLSelectElement>('sceneType');
+const sceneDescription = $<HTMLDivElement>('sceneDescription');
+const paramsForm = $<HTMLDivElement>('paramsForm');
 const pathSummary = $<HTMLDivElement>('pathSummary');
 const frameSlider = $<HTMLInputElement>('frameSlider');
 const frameLabel = $<HTMLSpanElement>('frameLabel');
 const fitBtn = $<HTMLButtonElement>('fitBtn');
-const speedInput = $<HTMLInputElement>('speed');
-const pointInputs: Record<PointKind, { lat: HTMLInputElement; lon: HTMLInputElement; height: HTMLInputElement }> = {
-  start: { lat: $('startLat'), lon: $('startLon'), height: $('startHeight') },
-  end: { lat: $('endLat'), lon: $('endLon'), height: $('endHeight') },
-};
-const pickButtons: Record<PointKind, HTMLButtonElement> = {
-  start: $('pickStart'),
-  end: $('pickEnd'),
-};
-const editableControls = [
-  ...Object.values(pointInputs).flatMap((p) => [p.lat, p.lon, p.height]),
-  ...Object.values(pickButtons),
-  speedInput,
-  frameSlider,
-  fitBtn,
-];
+const resetBtn = $<HTMLButtonElement>('resetBtn');
+
+const STORAGE_KEY = 'scene-recorder:v1';
+/** Points sampled along the trajectory for the map's ground track. */
+const TRACK_SAMPLES = 128;
 
 function setStatus(text: string): void {
   statusEl.textContent = text;
@@ -67,47 +69,57 @@ function formatEta(seconds: number | null): string {
   return ` — ETA ${m}:${String(s).padStart(2, '0')}`;
 }
 
-function formatWaypoint(w: Waypoint): string {
-  return `${w.lat.toFixed(5)}, ${w.lon.toFixed(5)} @ ${w.height} m`;
+function pointFields(scene: SceneType): PointField[] {
+  return scene.fields.filter((f): f is PointField => f.kind === 'point');
 }
 
-/** Parses a number input, or null when empty/invalid/out of range. */
-function readNumber(input: HTMLInputElement, min: number, max: number): number | null {
-  const v = Number(input.value);
-  if (input.value.trim() === '' || !Number.isFinite(v) || v < min || v > max) return null;
-  return v;
+// ---- Persistence -------------------------------------------------------------
+// Remembers the selected scene and each scene's params across reloads.
+
+interface StoredState {
+  sceneId: string;
+  params: Record<string, Params>;
 }
 
-/** Reads the flight from the form; null (with the offending field flagged) if invalid. */
-function readSpecFromInputs(): FlightSpec | null {
-  let ok = true;
-  const read = (input: HTMLInputElement, min: number, max: number): number => {
-    const v = readNumber(input, min, max);
-    input.classList.toggle('invalid', v === null);
-    if (v === null) ok = false;
-    return v ?? 0;
-  };
-  const readPoint = (kind: PointKind): Waypoint => ({
-    lat: read(pointInputs[kind].lat, -90, 90),
-    lon: read(pointInputs[kind].lon, -180, 180),
-    height: read(pointInputs[kind].height, -1000, 100_000),
-  });
-  const spec: FlightSpec = { start: readPoint('start'), end: readPoint('end'), speed: read(speedInput, 0.1, 10_000) };
-  return ok ? spec : null;
-}
-
-function writeSpecToInputs(spec: FlightSpec): void {
-  for (const kind of ['start', 'end'] as const) {
-    pointInputs[kind].lat.value = spec[kind].lat.toFixed(5);
-    pointInputs[kind].lon.value = spec[kind].lon.toFixed(5);
-    pointInputs[kind].height.value = String(spec[kind].height);
-    pointInputs[kind].lat.classList.remove('invalid');
-    pointInputs[kind].lon.classList.remove('invalid');
-    pointInputs[kind].height.classList.remove('invalid');
+function loadStoredState(): StoredState | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? (JSON.parse(raw) as StoredState) : null;
+  } catch {
+    return null;
   }
-  speedInput.value = String(spec.speed);
-  speedInput.classList.remove('invalid');
 }
+
+function saveStoredState(state: StoredState): void {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  } catch {
+    // Storage unavailable; nothing to do.
+  }
+}
+
+/** Stored params are only trusted if every field is present with the right shape. */
+function paramsMatchSchema(scene: SceneType, params: unknown): params is Params {
+  if (typeof params !== 'object' || params === null) return false;
+  const p = params as Record<string, unknown>;
+  return scene.fields.every((f) => {
+    const v = p[f.key];
+    if (f.kind === 'point') {
+      const w = v as Partial<Waypoint> | undefined;
+      return (
+        typeof w === 'object' &&
+        w !== null &&
+        Number.isFinite(w.lat) &&
+        Number.isFinite(w.lon) &&
+        Number.isFinite(w.height)
+      );
+    }
+    if (f.kind === 'number') return typeof v === 'number' && Number.isFinite(v);
+    return typeof v === 'string' && f.options.some((o) => o.value === v);
+  });
+}
+
+// ---- App ---------------------------------------------------------------------
 
 async function main(): Promise<void> {
   const token = import.meta.env.VITE_CESIUM_ION_TOKEN as string | undefined;
@@ -120,48 +132,115 @@ async function main(): Promise<void> {
   fitViewport();
   window.addEventListener('resize', fitViewport);
 
-  // ---- Flight state ------------------------------------------------------
-  const spec: FlightSpec = structuredClone(config.defaultFlight);
-  let path: FlightPath | null = null;
+  // ---- Scene state ---------------------------------------------------------
+  const stored = loadStoredState();
+  const paramsByScene: Record<string, Params> = {};
+  for (const scene of sceneTypes) {
+    const candidate = stored?.params[scene.id];
+    paramsByScene[scene.id] = paramsMatchSchema(scene, candidate) ? candidate : structuredClone(scene.defaults);
+  }
+  let scene: SceneType = getSceneType(
+    stored && sceneTypes.some((s) => s.id === stored.sceneId) ? stored.sceneId : config.defaultScene,
+  );
+  let params: Params = paramsByScene[scene.id];
+  let trajectory: Trajectory | null = null;
   let recording = false;
-  let armed: PointKind | null = null;
+  let armed: string | null = null;
+  let form: FormHandle | null = null;
+  /** Fit the map once the next trajectory is built (so the track is included). */
+  let fitAfterBuild = true;
 
-  writeSpecToInputs(spec);
+  const persist = () => saveStoredState({ sceneId: scene.id, params: paramsByScene });
 
-  // ---- Map for picking points --------------------------------------------
+  // ---- Scene selector ------------------------------------------------------
+  for (const s of sceneTypes) {
+    const option = document.createElement('option');
+    option.value = s.id;
+    option.textContent = s.name;
+    sceneSelect.append(option);
+  }
+  sceneSelect.value = scene.id;
+
+  // ---- Map -----------------------------------------------------------------
   const map = createFlightMap(mapEl, {
-    onPick(kind, lat, lon) {
-      spec[kind].lat = lat;
-      spec[kind].lon = lon;
-      writeSpecToInputs(spec);
-      map.setPoints(spec.start, spec.end);
+    onPick(key, lat, lon) {
+      const point = params[key] as Waypoint;
+      point.lat = lat;
+      point.lon = lon;
+      form?.refresh();
+      syncMarkers();
       scheduleRebuild();
-      // Natural flow: place the start, then the end, then stop picking.
-      setArmed(kind === 'start' ? 'end' : null);
+      // Natural flow: arm the next point in the scene, then stop picking.
+      const keys = pointFields(scene).map((f) => f.key);
+      const next = keys[keys.indexOf(key) + 1] ?? null;
+      setArmed(next);
     },
   });
-  map.setPoints(spec.start, spec.end);
-  map.fitTo(spec.start, spec.end);
 
-  function setArmed(kind: PointKind | null): void {
-    armed = kind;
-    map.setArmed(kind);
-    for (const k of ['start', 'end'] as const) pickButtons[k].classList.toggle('armed', k === kind);
-    pickHint.textContent =
-      kind === 'start'
-        ? 'Click the map to place the START point.'
-        : kind === 'end'
-          ? 'Click the map to place the END point (the camera looks at it).'
-          : 'Use “Pick on map” or type coordinates, then start recording.';
+  function syncMarkers(): void {
+    map.setMarkers(
+      pointFields(scene).map((f) => {
+        const w = params[f.key] as Waypoint;
+        return { key: f.key, label: f.label.replace(/\s*\(.*\)$/, ''), color: f.color, lat: w.lat, lon: w.lon };
+      }),
+    );
   }
-  setArmed('start');
 
-  for (const kind of ['start', 'end'] as const) {
-    pickButtons[kind].addEventListener('click', () => setArmed(armed === kind ? null : kind));
+  function setArmed(key: string | null): void {
+    armed = key;
+    map.setArmed(key);
+    form?.setArmed(key);
+    const field = key ? pointFields(scene).find((f) => f.key === key) : undefined;
+    pickHint.textContent = field
+      ? `Click the map to place: ${field.label}.`
+      : 'Use “Pick on map” or type coordinates, then start recording.';
   }
-  fitBtn.addEventListener('click', () => map.fitTo(spec.start, spec.end));
 
-  // ---- Recording viewer --------------------------------------------------
+  // ---- Form ----------------------------------------------------------------
+  function mountScene(next: SceneType): void {
+    scene = next;
+    params = paramsByScene[scene.id];
+    sceneSelect.value = scene.id;
+    sceneDescription.textContent = scene.description;
+    form?.destroy();
+    form = renderForm(paramsForm, scene.fields, params, {
+      onChange(valid) {
+        if (!valid) {
+          trajectory = null;
+          startBtn.disabled = true;
+          setStatus('Fix the highlighted fields.');
+          return;
+        }
+        syncMarkers();
+        scheduleRebuild();
+      },
+      onPick(key) {
+        setArmed(armed === key ? null : key);
+      },
+    });
+    syncMarkers();
+    map.setTrack([]);
+    setArmed(pointFields(scene)[0]?.key ?? null);
+    persist();
+  }
+
+  sceneSelect.addEventListener('change', () => {
+    mountScene(getSceneType(sceneSelect.value));
+    fitAfterBuild = true;
+    scheduleRebuild();
+  });
+  fitBtn.addEventListener('click', () => map.fitAll());
+  resetBtn.addEventListener('click', () => {
+    paramsByScene[scene.id] = structuredClone(scene.defaults);
+    mountScene(scene);
+    fitAfterBuild = true;
+    scheduleRebuild();
+  });
+
+  mountScene(scene);
+  map.fitAll();
+
+  // ---- Recording viewer ----------------------------------------------------
   setStatus('Loading terrain & imagery…');
   const viewer = await createViewer(container, config);
   const environment = createEnvironment(viewer, config);
@@ -174,83 +253,84 @@ async function main(): Promise<void> {
   idleLoop();
 
   // Debugging access from the browser console.
-  Object.assign(window, { viewer, Cesium });
+  Object.assign(window, { viewer, map, Cesium });
 
-  // ---- Path (re)building -------------------------------------------------
+  // ---- Trajectory (re)building ---------------------------------------------
   let rebuildTimer: number | undefined;
   let rebuildGeneration = 0;
 
   function scheduleRebuild(): void {
     window.clearTimeout(rebuildTimer);
-    rebuildTimer = window.setTimeout(() => void rebuildPath(), 250);
+    rebuildTimer = window.setTimeout(() => void rebuild(), 250);
   }
 
-  async function rebuildPath(): Promise<void> {
+  async function rebuild(): Promise<void> {
     const generation = ++rebuildGeneration;
+    const builtScene = scene;
     startBtn.disabled = true;
     setStatus('Sampling terrain…');
     try {
-      const built = await buildPath(viewer.terrainProvider, spec, config.video.fps);
+      const built = await builtScene.build({ terrainProvider: viewer.terrainProvider, fps: config.video.fps }, params);
       if (generation !== rebuildGeneration) return; // superseded by a newer edit
-      path = built;
-      Object.assign(window, { path });
+      trajectory = built;
+      Object.assign(window, { trajectory });
+      persist();
 
-      environment.update(path);
+      environment.update(trajectory);
+      map.setTrack(
+        Array.from({ length: TRACK_SAMPLES }, (_, i) =>
+          trajectory!.poseAt(Math.round((i / (TRACK_SAMPLES - 1)) * (trajectory!.frameCount - 1))).position,
+        ),
+      );
 
-      frameSlider.max = String(path.frameCount - 1);
+      if (fitAfterBuild) {
+        map.fitAll();
+        fitAfterBuild = false;
+      }
+
+      frameSlider.max = String(trajectory.frameCount - 1);
       frameSlider.value = '0';
       showFrame(0);
 
-      pathSummary.textContent =
-        `Start: ${formatWaypoint(spec.start)} (ground ${path.startGroundHeight.toFixed(0)} m)\n` +
-        `End:   ${formatWaypoint(spec.end)} (ground ${path.endGroundHeight.toFixed(0)} m)\n` +
-        `Path: ${path.length.toFixed(0)} m at ${spec.speed} m/s → ${path.duration.toFixed(1)} s video\n` +
-        `${path.frameCount} frames @ ${config.video.fps} fps, ${config.video.width}x${config.video.height}`;
+      pathSummary.textContent = [
+        `${builtScene.name}`,
+        ...trajectory.notes,
+        `Path: ${trajectory.length.toFixed(0)} m → ${trajectory.duration.toFixed(1)} s video`,
+        `${trajectory.frameCount} frames @ ${config.video.fps} fps, ${config.video.width}x${config.video.height}`,
+      ].join('\n');
       setStatus('Ready.');
       startBtn.disabled = recording;
     } catch (err) {
       if (generation !== rebuildGeneration) return;
-      path = null;
+      trajectory = null;
       pathSummary.textContent = '';
-      setStatus(`Invalid flight:\n${err instanceof Error ? err.message : String(err)}`);
+      map.setTrack([]);
+      setStatus(`Invalid scene:\n${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
   function showFrame(frame: number): void {
-    if (!path) return;
-    setCameraToFrame(viewer.scene.camera, path, frame);
-    const t = (frame / (path.frameCount - 1)) * path.duration;
-    frameLabel.textContent = `frame ${frame} / ${path.frameCount - 1} (${t.toFixed(1)} s)`;
+    if (!trajectory) return;
+    setCameraToFrame(viewer.scene.camera, trajectory, frame);
+    const t = (frame / (trajectory.frameCount - 1)) * trajectory.duration;
+    frameLabel.textContent = `frame ${frame} / ${trajectory.frameCount - 1} (${t.toFixed(1)} s)`;
   }
 
   frameSlider.addEventListener('input', () => showFrame(Number(frameSlider.value)));
 
-  const onInputsChanged = () => {
-    const next = readSpecFromInputs();
-    if (!next) {
-      setStatus('Fix the highlighted fields.');
-      startBtn.disabled = true;
-      return;
-    }
-    Object.assign(spec, next);
-    map.setPoints(spec.start, spec.end);
-    scheduleRebuild();
-  };
-  for (const input of [...Object.values(pointInputs).flatMap((p) => [p.lat, p.lon, p.height]), speedInput]) {
-    input.addEventListener('input', onInputsChanged);
-  }
+  await rebuild();
 
-  await rebuildPath();
-
-  // ---- Recording ---------------------------------------------------------
+  // ---- Recording -----------------------------------------------------------
   function setEditingEnabled(enabled: boolean): void {
-    for (const el of editableControls) (el as HTMLInputElement | HTMLButtonElement).disabled = !enabled;
+    form?.setEnabled(enabled);
     map.setEnabled(enabled);
+    for (const el of [sceneSelect, frameSlider, fitBtn, resetBtn]) el.disabled = !enabled;
   }
 
   startBtn.addEventListener('click', async () => {
-    if (!path) return;
-    const flight = path;
+    if (!trajectory) return;
+    const flight = trajectory;
+    const filename = `${scene.id}.mp4`;
     startBtn.disabled = true;
     recording = true;
     setArmed(null);
@@ -267,8 +347,8 @@ async function main(): Promise<void> {
           setStatus('Finalizing MP4…');
         }
       });
-      downloadBlob(blob, 'flight.mp4');
-      setStatus(`Done — flight.mp4 downloaded (${(blob.size / 1e6).toFixed(1)} MB).`);
+      downloadBlob(blob, filename);
+      setStatus(`Done — ${filename} downloaded (${(blob.size / 1e6).toFixed(1)} MB).`);
     } catch (err) {
       console.error(err);
       setStatus(`Recording failed:\n${err instanceof Error ? err.message : String(err)}`);
@@ -276,7 +356,7 @@ async function main(): Promise<void> {
       recording = false;
       progressBar.classList.remove('active');
       setEditingEnabled(true);
-      startBtn.disabled = path === null;
+      startBtn.disabled = trajectory === null;
       // Return the preview to the frame the slider shows.
       showFrame(Number(frameSlider.value));
     }
