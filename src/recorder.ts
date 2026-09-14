@@ -1,6 +1,6 @@
 import * as Cesium from 'cesium';
 import type { Config } from './config';
-import type { FlightPath } from './path';
+import { setCameraToFrame, type FlightPath } from './path';
 import { Mp4Encoder } from './encoder';
 
 export interface RecordProgress {
@@ -34,12 +34,12 @@ export async function recordFlight(
   try {
     // Warm-up: load the start view fully so frame 0 is as sharp as the rest.
     onProgress({ frame: 0, frameCount: path.frameCount, phase: 'warm-up', etaSeconds: null });
-    setCamera(viewer, path, 0);
+    setCameraToFrame(viewer.scene.camera, path, 0);
     await renderUntilLoaded(viewer, config.tileLoadTimeoutMs);
 
     const startedAt = performance.now();
     for (let frame = 0; frame < path.frameCount; frame++) {
-      setCamera(viewer, path, frame);
+      setCameraToFrame(viewer.scene.camera, path, frame);
       await renderUntilLoaded(viewer, config.tileLoadTimeoutMs);
       await encoder.addFrame(frame);
 
@@ -54,14 +54,6 @@ export async function recordFlight(
     await encoder.cancel().catch(() => {});
     throw err;
   }
-}
-
-function setCamera(viewer: Cesium.Viewer, path: FlightPath, frame: number): void {
-  const pose = path.poseAt(frame);
-  viewer.scene.camera.setView({
-    destination: pose.position,
-    orientation: { direction: pose.direction, up: pose.up },
-  });
 }
 
 /**

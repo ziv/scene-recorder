@@ -1,22 +1,27 @@
-export interface Config {
-  /** End position of the flight; the camera always looks at this point. */
-  target: {
-    lat: number; // degrees
-    lon: number; // degrees
-    /** Meters above ground (terrain height is sampled and added). */
-    height: number;
-  };
-  /** Start position relative to the target, in meters. */
-  startOffset: {
-    /** Positive = east. */
-    x: number;
-    /** Positive = south. */
-    y: number;
-    /** Height component (up) of the offset. */
-    z: number;
-  };
+export type Weather = 'clear' | 'partlyCloudy' | 'overcast' | 'foggy';
+
+export interface Waypoint {
+  lat: number; // degrees
+  lon: number; // degrees
+  /** Meters above ground (terrain height is sampled at this lat/lon and added). */
+  height: number;
+}
+
+export interface FlightSpec {
+  /** Camera position on the first frame. */
+  start: Waypoint;
+  /** Camera position on the last frame; the camera always looks at this point. */
+  end: Waypoint;
   /** Flight speed along the path, m/s. Video duration = path length / speed. */
   speed: number;
+}
+
+export interface Config {
+  /**
+   * Flight shown when the app loads. Start, end and speed are edited in the UI
+   * (by clicking the map or typing coordinates) before recording.
+   */
+  defaultFlight: FlightSpec;
   video: {
     width: number;
     height: number;
@@ -32,14 +37,22 @@ export interface Config {
   };
   /** Per-frame ceiling on waiting for tiles before giving up and capturing anyway. */
   tileLoadTimeoutMs: number;
+  environment: {
+    /** Date used for the sun's seasonal position, 'YYYY-MM-DD'. */
+    date: string;
+    /** Hour of day (0-24, fractions allowed), local solar time at the end point. */
+    hourOfDay: number;
+    weather: Weather;
+  };
 }
 
 export const config: Config = {
-  // Example: Matterhorn summit area
-  // target: { lat: 45.9763, lon: 7.6586, height: 200 },
-  target: { lat: 36.1, lon: -112.1251, height: 200 },
-  startOffset: { x: -2000, y: -3000, z: 1500 },
-  speed: 100,
+  defaultFlight: {
+    // Example: approach to the Matterhorn summit from the north-west.
+    start: { lat: 46.0032, lon: 7.6327, height: 1500 },
+    end: { lat: 45.9763, lon: 7.6586, height: 200 },
+    speed: 100,
+  },
   video: {
     width: 1200,
     height: 800,
@@ -52,4 +65,9 @@ export const config: Config = {
     msaaSamples: 4,
   },
   tileLoadTimeoutMs: 30_000,
+  environment: {
+    date: '2026-06-21',
+    hourOfDay: 12,
+    weather: 'partlyCloudy',
+  },
 };

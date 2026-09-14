@@ -45,14 +45,9 @@ export async function createViewer(container: HTMLElement, config: Config): Prom
   const scene = viewer.scene;
   scene.globe.maximumScreenSpaceError = config.quality.maximumScreenSpaceError;
   scene.globe.tileCacheSize = config.quality.tileCacheSize;
-  scene.globe.enableLighting = false;
-  scene.fog.enabled = false;
   scene.postProcessStages.fxaa.enabled = true;
   viewer.resolutionScale = 1.0;
 
-  // Fixed simulation time so lighting is identical in every frame.
-  viewer.clock.currentTime = Cesium.JulianDate.fromIso8601('2026-06-21T10:00:00Z');
-  viewer.clock.shouldAnimate = false;
-
+  // Time-of-day, lighting, fog, and clouds are set by applyEnvironment().
   return viewer;
 }
