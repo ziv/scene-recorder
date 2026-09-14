@@ -1,15 +1,17 @@
 import * as Cesium from 'cesium';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
-import { config } from './config';
-import { createViewer } from './viewer';
+import { defaultConfig, type Config } from './config';
+import { applyQuality, createViewer } from './viewer';
 import { createEnvironment } from './environment';
 import { createFlightMap } from './map';
 import { renderForm, type FormHandle } from './form';
-import { recordFlight, type RecordProgress } from './recorder';
+import { recordFlight, RecordingCancelled, type RecordProgress } from './recorder';
+import { applySettings, configToSettings, settingsFields } from './settings';
 import {
   getSceneType,
   sceneTypes,
   setCameraToFrame,
+  type ParamField,
   type Params,
   type PointField,
   type SceneType,
@@ -20,6 +22,7 @@ import {
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
 const startBtn = $<HTMLButtonElement>('startBtn');
+const cancelBtn = $<HTMLButtonElement>('cancelBtn');
 const statusEl = $<HTMLDivElement>('status');
 const progressBar = $<HTMLDivElement>('progressBar');
 const progressFill = $<HTMLDivElement>('progressFill');
@@ -35,8 +38,10 @@ const frameSlider = $<HTMLInputElement>('frameSlider');
 const frameLabel = $<HTMLSpanElement>('frameLabel');
 const fitBtn = $<HTMLButtonElement>('fitBtn');
 const resetBtn = $<HTMLButtonElement>('resetBtn');
+const settingsForm = $<HTMLDivElement>('settingsForm');
+const resetSettingsBtn = $<HTMLButtonElement>('resetSettingsBtn');
 
-const STORAGE_KEY = 'scene-recorder:v1';
+const STORAGE_KEY = 'scene-recorder:v2';
 /** Points sampled along the trajectory for the map's ground track. */
 const TRACK_SAMPLES = 128;
 
@@ -45,7 +50,7 @@ function setStatus(text: string): void {
 }
 
 /** Lay the container out at exact video resolution, CSS-scaled to fit the viewport. */
-function fitViewport(): void {
+function fitViewport(config: Config): void {
   const { width, height } = config.video;
   container.style.width = `${width}px`;
   container.style.height = `${height}px`;
@@ -79,6 +84,8 @@ function pointFields(scene: SceneType): PointField[] {
 interface StoredState {
   sceneId: string;
   params: Record<string, Params>;
+  /** Flat "Output & quality" settings (see settings.ts). */
+  settings?: Params;
 }
 
 function loadStoredState(): StoredState | null {
@@ -99,10 +106,10 @@ function saveStoredState(state: StoredState): void {
 }
 
 /** Stored params are only trusted if every field is present with the right shape. */
-function paramsMatchSchema(scene: SceneType, params: unknown): params is Params {
+function paramsMatchSchema(fields: ParamField[], params: unknown): params is Params {
   if (typeof params !== 'object' || params === null) return false;
   const p = params as Record<string, unknown>;
-  return scene.fields.every((f) => {
+  return fields.every((f) => {
     const v = p[f.key];
     if (f.kind === 'point') {
       const w = v as Partial<Waypoint> | undefined;
@@ -115,6 +122,7 @@ function paramsMatchSchema(scene: SceneType, params: unknown): params is Params 
       );
     }
     if (f.kind === 'number') return typeof v === 'number' && Number.isFinite(v);
+    if (f.kind === 'date') return typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
     return typeof v === 'string' && f.options.some((o) => o.value === v);
   });
 }
@@ -129,15 +137,20 @@ async function main(): Promise<void> {
   }
   Cesium.Ion.defaultAccessToken = token;
 
-  fitViewport();
-  window.addEventListener('resize', fitViewport);
+  // ---- Config (mutable copy of the defaults, edited in the settings panel) --
+  const stored = loadStoredState();
+  const config: Config = structuredClone(defaultConfig);
+  if (paramsMatchSchema(settingsFields, stored?.settings)) applySettings(stored.settings, config);
+  let settings: Params = configToSettings(config);
+
+  fitViewport(config);
+  window.addEventListener('resize', () => fitViewport(config));
 
   // ---- Scene state ---------------------------------------------------------
-  const stored = loadStoredState();
   const paramsByScene: Record<string, Params> = {};
   for (const scene of sceneTypes) {
     const candidate = stored?.params[scene.id];
-    paramsByScene[scene.id] = paramsMatchSchema(scene, candidate) ? candidate : structuredClone(scene.defaults);
+    paramsByScene[scene.id] = paramsMatchSchema(scene.fields, candidate) ? candidate : structuredClone(scene.defaults);
   }
   let scene: SceneType = getSceneType(
     stored && sceneTypes.some((s) => s.id === stored.sceneId) ? stored.sceneId : config.defaultScene,
@@ -150,7 +163,7 @@ async function main(): Promise<void> {
   /** Fit the map once the next trajectory is built (so the track is included). */
   let fitAfterBuild = true;
 
-  const persist = () => saveStoredState({ sceneId: scene.id, params: paramsByScene });
+  const persist = () => saveStoredState({ sceneId: scene.id, params: paramsByScene, settings });
 
   // ---- Scene selector ------------------------------------------------------
   for (const s of sceneTypes) {
@@ -253,7 +266,55 @@ async function main(): Promise<void> {
   idleLoop();
 
   // Debugging access from the browser console.
-  Object.assign(window, { viewer, map, Cesium });
+  Object.assign(window, { viewer, map, config, Cesium });
+
+  // ---- Output & quality settings ------------------------------------------
+  let settingsTimer: number | undefined;
+  const mountSettingsForm = (): FormHandle =>
+    renderForm(settingsForm, settingsFields, settings, {
+      onChange(valid) {
+        if (!valid) {
+          setStatus('Fix the highlighted settings.');
+          startBtn.disabled = true;
+          return;
+        }
+        window.clearTimeout(settingsTimer);
+        settingsTimer = window.setTimeout(applyCurrentSettings, 250);
+      },
+      onPick() {},
+    });
+  let settingsForm_ = mountSettingsForm();
+
+  function applyCurrentSettings(): void {
+    const before = structuredClone(config);
+    applySettings(settings, config);
+    persist();
+
+    const sizeChanged = before.video.width !== config.video.width || before.video.height !== config.video.height;
+    if (sizeChanged) {
+      fitViewport(config);
+      viewer.resize();
+    }
+    applyQuality(viewer, config);
+    if (trajectory) environment.update(trajectory);
+
+    if (before.video.fps !== config.video.fps) {
+      scheduleRebuild(); // frame count depends on fps
+    } else {
+      renderSummary();
+      if (trajectory && !recording) {
+        setStatus('Ready.');
+        startBtn.disabled = false;
+      }
+    }
+  }
+
+  resetSettingsBtn.addEventListener('click', () => {
+    settings = configToSettings(defaultConfig);
+    settingsForm_.destroy();
+    settingsForm_ = mountSettingsForm();
+    applyCurrentSettings();
+  });
 
   // ---- Trajectory (re)building ---------------------------------------------
   let rebuildTimer: number | undefined;
@@ -292,12 +353,7 @@ async function main(): Promise<void> {
       frameSlider.value = '0';
       showFrame(0);
 
-      pathSummary.textContent = [
-        `${builtScene.name}`,
-        ...trajectory.notes,
-        `Path: ${trajectory.length.toFixed(0)} m → ${trajectory.duration.toFixed(1)} s video`,
-        `${trajectory.frameCount} frames @ ${config.video.fps} fps, ${config.video.width}x${config.video.height}`,
-      ].join('\n');
+      renderSummary();
       setStatus('Ready.');
       startBtn.disabled = recording;
     } catch (err) {
@@ -307,6 +363,20 @@ async function main(): Promise<void> {
       map.setTrack([]);
       setStatus(`Invalid scene:\n${err instanceof Error ? err.message : String(err)}`);
     }
+  }
+
+  function renderSummary(): void {
+    if (!trajectory) {
+      pathSummary.textContent = '';
+      return;
+    }
+    pathSummary.textContent = [
+      `${scene.name}`,
+      ...trajectory.notes,
+      `Path: ${trajectory.length.toFixed(0)} m → ${trajectory.duration.toFixed(1)} s video`,
+      `${trajectory.frameCount} frames @ ${config.video.fps} fps, ${config.video.width}x${config.video.height}, ` +
+        `${(config.video.bitrate / 1e6).toFixed(1)} Mbit/s`,
+    ].join('\n');
   }
 
   function showFrame(frame: number): void {
@@ -323,38 +393,63 @@ async function main(): Promise<void> {
   // ---- Recording -----------------------------------------------------------
   function setEditingEnabled(enabled: boolean): void {
     form?.setEnabled(enabled);
+    settingsForm_.setEnabled(enabled);
     map.setEnabled(enabled);
-    for (const el of [sceneSelect, frameSlider, fitBtn, resetBtn]) el.disabled = !enabled;
+    for (const el of [sceneSelect, frameSlider, fitBtn, resetBtn, resetSettingsBtn]) el.disabled = !enabled;
   }
+
+  let abort: AbortController | null = null;
+  cancelBtn.addEventListener('click', () => {
+    abort?.abort();
+    cancelBtn.disabled = true;
+    setStatus('Cancelling…');
+  });
 
   startBtn.addEventListener('click', async () => {
     if (!trajectory) return;
     const flight = trajectory;
     const filename = `${scene.id}.mp4`;
-    startBtn.disabled = true;
+    abort = new AbortController();
+    startBtn.hidden = true;
+    cancelBtn.hidden = false;
+    cancelBtn.disabled = false;
     recording = true;
     setArmed(null);
     setEditingEnabled(false);
     progressBar.classList.add('active');
+    progressFill.style.width = '0%';
     try {
-      const blob = await recordFlight(viewer, flight, config, (p: RecordProgress) => {
-        progressFill.style.width = `${(p.frame / p.frameCount) * 100}%`;
-        if (p.phase === 'warm-up') {
-          setStatus('Warming up: loading tiles for the first frame…');
-        } else if (p.phase === 'recording') {
-          setStatus(`Recording frame ${p.frame}/${p.frameCount}${formatEta(p.etaSeconds)}`);
-        } else {
-          setStatus('Finalizing MP4…');
-        }
-      });
+      const blob = await recordFlight(
+        viewer,
+        flight,
+        config,
+        (p: RecordProgress) => {
+          progressFill.style.width = `${(p.frame / p.frameCount) * 100}%`;
+          if (p.phase === 'warm-up') {
+            setStatus('Warming up: loading tiles for the first frame…');
+          } else if (p.phase === 'recording') {
+            setStatus(`Recording frame ${p.frame}/${p.frameCount}${formatEta(p.etaSeconds)}`);
+          } else {
+            setStatus('Finalizing MP4…');
+          }
+        },
+        abort.signal,
+      );
       downloadBlob(blob, filename);
       setStatus(`Done — ${filename} downloaded (${(blob.size / 1e6).toFixed(1)} MB).`);
     } catch (err) {
-      console.error(err);
-      setStatus(`Recording failed:\n${err instanceof Error ? err.message : String(err)}`);
+      if (err instanceof RecordingCancelled) {
+        setStatus('Recording cancelled.');
+      } else {
+        console.error(err);
+        setStatus(`Recording failed:\n${err instanceof Error ? err.message : String(err)}`);
+      }
     } finally {
       recording = false;
+      abort = null;
       progressBar.classList.remove('active');
+      cancelBtn.hidden = true;
+      startBtn.hidden = false;
       setEditingEnabled(true);
       startBtn.disabled = trajectory === null;
       // Return the preview to the frame the slider shows.

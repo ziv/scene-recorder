@@ -27,7 +27,11 @@ export interface Config {
   };
 }
 
-export const config: Config = {
+/**
+ * Built-in defaults. The app makes a mutable copy of this at startup; the
+ * "Output & quality" panel edits that copy and persists it in the browser.
+ */
+export const defaultConfig: Config = {
   defaultScene: 'straight',
   video: {
     width: 1200,

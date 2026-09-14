@@ -42,12 +42,18 @@ export async function createViewer(container: HTMLElement, config: Config): Prom
     creditContainer: document.createElement('div'),
   });
 
+  applyQuality(viewer, config);
+  viewer.scene.postProcessStages.fxaa.enabled = true;
+  viewer.resolutionScale = 1.0;
+
+  // Time-of-day, lighting, fog, and clouds are set by the environment module.
+  return viewer;
+}
+
+/** Applies the quality settings that can change at runtime. */
+export function applyQuality(viewer: Cesium.Viewer, config: Config): void {
   const scene = viewer.scene;
   scene.globe.maximumScreenSpaceError = config.quality.maximumScreenSpaceError;
   scene.globe.tileCacheSize = config.quality.tileCacheSize;
-  scene.postProcessStages.fxaa.enabled = true;
-  viewer.resolutionScale = 1.0;
-
-  // Time-of-day, lighting, fog, and clouds are set by applyEnvironment().
-  return viewer;
+  scene.msaaSamples = config.quality.msaaSamples;
 }

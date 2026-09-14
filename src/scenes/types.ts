@@ -61,7 +61,13 @@ export interface SelectField {
   options: { value: string; label: string }[];
 }
 
-export type ParamField = PointField | NumberField | SelectField;
+export interface DateField {
+  kind: 'date';
+  key: string;
+  label: string;
+}
+
+export type ParamField = PointField | NumberField | SelectField | DateField;
 
 export type ParamValue = Waypoint | number | string;
 export type Params = Record<string, ParamValue>;

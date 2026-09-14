@@ -120,6 +120,24 @@ export function renderForm(root: HTMLElement, fields: ParamField[], params: Para
         (v) => (params[field.key] = v),
       );
       numberRows.append(labelled(field.unit ? `${field.label} (${field.unit})` : field.label, input));
+    } else if (field.kind === 'date') {
+      const input = document.createElement('input');
+      input.type = 'date';
+      controls.push(input);
+      inputs.push({
+        input,
+        read() {
+          const ok = /^\d{4}-\d{2}-\d{2}$/.test(input.value);
+          input.classList.toggle('invalid', !ok);
+          if (ok) params[field.key] = input.value;
+          return ok;
+        },
+        write() {
+          input.value = String(params[field.key]);
+          input.classList.remove('invalid');
+        },
+      });
+      numberRows.append(labelled(field.label, input));
     } else {
       const select = document.createElement('select');
       for (const opt of field.options) {

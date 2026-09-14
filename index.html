@@ -163,6 +163,27 @@
         color: #aaa;
         white-space: nowrap;
       }
+      details#settings {
+        border: 1px solid #333;
+        border-radius: 6px;
+        padding: 8px 10px 10px;
+      }
+      details#settings summary {
+        cursor: pointer;
+        color: #bbb;
+        user-select: none;
+      }
+      details#settings[open] summary {
+        margin-bottom: 8px;
+      }
+      #cancelBtn {
+        font-size: 15px;
+        padding: 8px 18px;
+        background: #b71c1c;
+        border-color: #b71c1c;
+        color: #fff;
+        font-weight: 600;
+      }
       #startBtn {
         font-size: 15px;
         padding: 8px 18px;
@@ -247,8 +268,19 @@
         <input id="frameSlider" type="range" min="0" max="1" value="0" />
       </div>
 
+      <details id="settings">
+        <summary>Output &amp; quality</summary>
+        <div id="settingsForm"></div>
+        <div class="row" style="margin-top: 8px">
+          <button id="resetSettingsBtn" type="button">Reset to defaults</button>
+        </div>
+      </details>
+
       <div id="pathSummary"></div>
-      <button id="startBtn" type="button" disabled>Start Recording</button>
+      <div class="row">
+        <button id="startBtn" type="button" disabled>Start Recording</button>
+        <button id="cancelBtn" type="button" hidden>Cancel</button>
+      </div>
       <div id="progressBar"><div id="progressFill"></div></div>
       <div id="status">Loading…</div>
     </aside>

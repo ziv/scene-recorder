@@ -66,12 +66,13 @@ The left sidebar holds everything you control. The main viewport shows a live pr
 1. **Choose a scene** from the dropdown. A short description explains what it does.
 2. **Place points.** Each scene has one or more geographic points. Click "Pick on map" next to a point, then click the map to place it. After placing one point the next one is armed automatically, so a straight flight is just two clicks. You can also type latitude, longitude and height directly. The search box on the map jumps to a place by name.
 3. **Tune parameters.** Speed, heights, radii and angles are plain numeric fields. Out-of-range values highlight the field and disable recording.
-4. **Preview.** The map draws the camera's ground track as a yellow arrow. Drag the Preview slider to scrub through frames in the main viewport. The summary panel shows path length, duration and frame count.
-5. **Record.** Press Start Recording. Progress and an ETA are shown. When done, the browser downloads a file named after the scene, for example `orbit.mp4`.
+4. **Preview.** The map draws the camera's ground track as a yellow arrow. Drag the Preview slider to scrub through frames in the main viewport. The summary panel shows path length, duration, frame count and output format.
+5. **Set output and quality.** Expand "Output & quality" to change video resolution, frame rate and bitrate, tile detail, tile cache, anti-aliasing, tile load timeout, and the date, local solar time and weather. Changes apply immediately to the preview and are remembered across reloads. "Reset to defaults" restores the values from `src/config.ts`.
+6. **Record.** Press Start Recording. Progress and an ETA are shown, and the button turns into Cancel. Cancelling stops the recording and discards it. When a recording completes, the browser downloads a file named after the scene, for example `orbit.mp4`.
 
 Heights are always meters above the terrain at that point. The terrain height is sampled and added automatically, so a start height of 1500 means 1500 meters above the ground at the start location.
 
-Your scene selection and parameters are saved in the browser and restored on reload. "Reset to defaults" restores a scene's built-in example, and "Fit map to scene" recenters the map.
+Your scene selection, scene parameters and output settings are saved in the browser and restored on reload. The scene's "Reset to defaults" restores its built-in example, and "Fit map to scene" recenters the map.
 
 Recording takes a while. Every frame waits for all terrain and imagery tiles to finish loading before it is captured, so a 30 second video at 30 fps can take several minutes depending on your connection and GPU. Keep the tab in the foreground while recording.
 
@@ -89,7 +90,7 @@ All scenes move at constant speed along their path, so duration is simply path l
 
 ## Configuration
 
-Video and quality settings live in `src/config.ts`:
+Defaults for the "Output & quality" panel live in `src/config.ts`. Values edited in the panel override them at runtime and are stored in the browser:
 
 - `video`: output width, height, frame rate and bitrate. The Cesium canvas is laid out at exactly this resolution, so the video is rendered pixel for pixel. Very large resolutions may exceed what your GPU or browser encoder supports.
 - `quality`: Cesium tile detail (`maximumScreenSpaceError`, lower is sharper), tile cache size and anti-aliasing samples.
@@ -110,7 +111,8 @@ src/
   encoder.ts        MP4 encoding via mediabunny and WebCodecs
   environment.ts    Sun time, fog and clouds for the current scene
   map.ts            The small 2D picking map with markers and ground track
-  form.ts           Renders a parameter form from a scene's field schema
+  form.ts           Renders a parameter form from a field schema
+  settings.ts       "Output & quality" panel schema, mapped onto the config
   scenes/
     types.ts        Scene and trajectory contracts, parameter field schema
     geo.ts          Geometry helpers and constant-speed reparametrisation
@@ -127,7 +129,7 @@ A scene is a single module. It declares its parameters as a schema, and the form
 
 1. Create `src/scenes/myscene.ts`.
 2. Call `defineScene` with an id, name, description, a `fields` list, `defaults`, and a `build` function.
-3. Fields can be `point` (a lat/lon/height picked on the map), `number` (with min, max and step) or `select` (a list of options).
+3. Fields can be `point` (a lat/lon/height picked on the map), `number` (with min, max and step), `select` (a list of options) or `date`.
 4. In `build`, sample terrain with `sampleGround`, define a `positionAt(u)` function for the curve, and pass it to `constantSpeedTrajectory` along with a pose function. The helper measures the curve and re-parametrises it by arc length so the video plays at uniform speed. Return the result together with a `focus` point and `radius`, which the environment uses to centre clouds and compute sun time.
 5. Append the scene to the list in `src/scenes/index.ts`.
 
